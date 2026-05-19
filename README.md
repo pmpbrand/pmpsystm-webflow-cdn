@@ -11,7 +11,14 @@ https://cdn.jsdelivr.net/gh/pmpbrand/pmpsystm-webflow-cdn@v1.0.0/confess-page.js
 https://cdn.jsdelivr.net/gh/pmpbrand/pmpsystm-webflow-cdn@v1.0.0/voices-page.js
 https://cdn.jsdelivr.net/gh/pmpbrand/pmpsystm-webflow-cdn@v1.0.0/unlock-page.js
 https://cdn.jsdelivr.net/gh/pmpbrand/pmpsystm-webflow-cdn@v1.0.0/success-page.js
-https://cdn.jsdelivr.net/gh/pmpbrand/pmpsystm-webflow-cdn@v1.0.0/success-page-complete.js
+```
+
+Success page with PDF download support needs dependencies loaded first:
+
+```html
+<script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/pmpbrand/pmpsystm-webflow-cdn@v1.0.1/success-page-complete.js"></script>
 ```
 
 For testing the latest main branch only:

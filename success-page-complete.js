@@ -1,9 +1,4 @@
-<!-- PDF Libraries - Load First -->
-<script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
-
-<script>
-// Wait for libraries to load
+// Complete success page handler. Requires pdf-lib and qrcode to be loaded first.
 (function() {
   'use strict';
 
@@ -355,5 +350,3 @@
     });
   }
 })();
-</script>
-
