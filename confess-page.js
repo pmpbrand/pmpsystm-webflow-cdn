@@ -8,6 +8,7 @@ console.log('PMP V1 Confession form script loaded');
   const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im51ZWVidnlpc3dlemlzaGx6dWt1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYwNjM5MTksImV4cCI6MjA4MTYzOTkxOX0.IKOeMO8RDgR8KlG_RpnTKVtbh2prJhbAyKIt1R89j4M';
   const TURNSTILE_SITE_KEY = '0x4AAAAAACM4eF914zsRvui3';
   const TURNSTILE_SCRIPT_SRC = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+  const BROWSER_ID_STORAGE_KEY = 'pmp_confession_browser_id';
 
   let turnstileToken = ''; // Store token when widget completes
   let turnstileWidgetId = null;
@@ -53,14 +54,33 @@ console.log('PMP V1 Confession form script loaded');
     return turnstileLoadPromise;
   }
 
+  function createBrowserId() {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+      return window.crypto.randomUUID();
+    }
+
+    return [
+      Date.now().toString(36),
+      Math.random().toString(36).slice(2),
+      Math.random().toString(36).slice(2),
+    ].join('-');
+  }
+
+  function getBrowserId() {
+    try {
+      let browserId = window.localStorage.getItem(BROWSER_ID_STORAGE_KEY);
+      if (!browserId) {
+        browserId = createBrowserId();
+        window.localStorage.setItem(BROWSER_ID_STORAGE_KEY, browserId);
+      }
+      return browserId;
+    } catch (error) {
+      return createBrowserId();
+    }
+  }
+
   async function generateFingerprintHash() {
-    const fingerprint = [
-      navigator.userAgent || '',
-      navigator.language || '',
-      new Date().getTimezoneOffset().toString(),
-      (window.screen?.width || 0).toString(),
-      (window.screen?.height || 0).toString(),
-    ].join('|');
+    const fingerprint = `pmp-confession|${getBrowserId()}`;
 
     const encoder = new TextEncoder();
     const data = encoder.encode(fingerprint);
