@@ -464,20 +464,32 @@
       });
       const checkout = this.root.querySelector('[data-pmp-checkout]');
       if (checkout) checkout.disabled = !lines.length;
+      const empty = this.root.querySelector('.pmp-cart-empty');
+      if (empty) empty.classList.toggle('pmp-is-hidden', Boolean(lines.length));
     }
 
     openCart() {
       this.root.dataset.pmpCartOpen = 'true';
       this.root.classList.add('pmp-is-cart-open');
       const cart = this.root.querySelector('[data-pmp-cart]');
-      if (cart) cart.setAttribute('aria-hidden', 'false');
+      if (cart) {
+        cart.setAttribute('aria-hidden', 'false');
+        cart.classList.add('pmp-cart-drawer-open');
+      }
+      const backdrop = this.root.querySelector('.pmp-cart-backdrop');
+      if (backdrop) backdrop.classList.add('pmp-cart-backdrop-open');
     }
 
     closeCart() {
       this.root.dataset.pmpCartOpen = 'false';
       this.root.classList.remove('pmp-is-cart-open');
       const cart = this.root.querySelector('[data-pmp-cart]');
-      if (cart) cart.setAttribute('aria-hidden', 'true');
+      if (cart) {
+        cart.setAttribute('aria-hidden', 'true');
+        cart.classList.remove('pmp-cart-drawer-open');
+      }
+      const backdrop = this.root.querySelector('.pmp-cart-backdrop');
+      if (backdrop) backdrop.classList.remove('pmp-cart-backdrop-open');
     }
 
     checkout() {
