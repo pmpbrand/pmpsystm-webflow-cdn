@@ -138,7 +138,10 @@
       this.domain = domain.replace(/^https?:\/\//, '').replace(/\/$/, '');
       this.token = token;
       this.apiVersion = apiVersion || DEFAULT_API_VERSION;
-      this.fetchImpl = fetchImpl || global.fetch || (typeof globalThis !== 'undefined' ? globalThis.fetch : null);
+      if (fetchImpl) this.fetchImpl = fetchImpl;
+      else if (global.fetch) this.fetchImpl = global.fetch.bind(global);
+      else if (typeof globalThis !== 'undefined' && globalThis.fetch) this.fetchImpl = globalThis.fetch.bind(globalThis);
+      else this.fetchImpl = null;
       if (!this.fetchImpl) throw new Error('Fetch is unavailable.');
     }
 
