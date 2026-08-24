@@ -36,7 +36,7 @@
               id title availableForSale
               selectedOptions { name value }
               image { url altText width height }
-              product { title handle }
+              product { id title handle }
             }
           }
         }
@@ -131,11 +131,42 @@
     if (image.height) element.height = image.height;
   }
 
+  function cartLines(cart) {
+    return cart && cart.lines && Array.isArray(cart.lines.nodes) ? cart.lines.nodes : [];
+  }
+
+  function eventTargetWindow(element) {
+    return element && element.ownerDocument && element.ownerDocument.defaultView;
+  }
+
+  function dispatch(element, name, detail) {
+    const view = eventTargetWindow(element);
+    const EventConstructor = (view && view.CustomEvent) || global.CustomEvent;
+    if (typeof EventConstructor !== 'function') return;
+    element.dispatchEvent(new EventConstructor(name, { bubbles: true, detail }));
+  }
+
+  function checkoutUrlIsSafe(value, allowedHosts) {
+    try {
+      const url = new URL(value);
+      return url.protocol === 'https:'
+        && !url.username
+        && !url.password
+        && allowedHosts instanceof Set
+        && allowedHosts.has(url.hostname.toLowerCase());
+    } catch (_) {
+      return false;
+    }
+  }
+
   class StorefrontClient {
     constructor({ domain, token, apiVersion, fetchImpl } = {}) {
       if (!domain) throw new Error('Missing Shopify domain.');
       if (!token) throw new Error('Missing public Shopify Storefront token.');
-      this.domain = domain.replace(/^https?:\/\//, '').replace(/\/$/, '');
+      this.domain = domain.replace(/^https?:\/\//, '').replace(/\/$/, '').toLowerCase();
+      if (!/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/.test(this.domain)) {
+        throw new Error('Invalid Shopify domain. Expected a *.myshopify.com hostname.');
+      }
       this.token = token;
       this.apiVersion = apiVersion || DEFAULT_API_VERSION;
       if (fetchImpl) this.fetchImpl = fetchImpl;
@@ -154,7 +185,11 @@
         },
         body: JSON.stringify({ query, variables: variables || {} })
       });
-      const payload = await response.json();
+      let payload;
+      try { payload = await response.json(); }
+      catch (_) {
+        throw new Error(response.ok ? 'Shopify returned an invalid response.' : `Shopify request failed (${response.status}).`);
+      }
       if (!response.ok) throw new Error(`Shopify request failed (${response.status}).`);
       if (payload.errors && payload.errors.length) throw new Error(payload.errors.map((error) => error.message).join(' '));
       return payload.data;
@@ -210,42 +245,69 @@
         token: root.dataset.shopifyStorefrontToken,
         apiVersion: root.dataset.shopifyApiVersion || DEFAULT_API_VERSION
       });
+      this.checkoutHosts = new Set([
+        root.dataset.shopifyDomain,
+        root.dataset.shopifyCheckoutDomain
+      ].filter(Boolean).map((host) => host.replace(/^https?:\/\//, '').replace(/\/$/, '').toLowerCase()));
       this.products = new Map();
+      this.productCache = new Map();
       this.selections = new WeakMap();
       this.cart = null;
       this.busy = false;
+      this.actionQueue = Promise.resolve();
+      this.pendingAddButtons = new WeakSet();
+      this.navigate = options.navigate || ((url) => {
+        const view = eventTargetWindow(this.root) || global;
+        view.location.assign(url);
+      });
     }
 
     async init() {
       this.bindCartControls();
       this.root.dataset.pmpState = 'loading';
+      this.root.dataset.pmpCartState = 'loading';
       const productRoots = [...this.root.querySelectorAll('[data-pmp-product]')];
-      const jobs = productRoots.map((productRoot) => this.loadProduct(productRoot));
-      jobs.push(this.restoreCart());
-      const results = await Promise.allSettled(jobs);
-      const failed = results.filter((result) => result.status === 'rejected');
-      this.root.dataset.pmpState = failed.length === results.length ? 'error' : 'ready';
-      this.root.dispatchEvent(new global.CustomEvent('pmp:commerce-ready', { detail: { failed: failed.length } }));
+      const productJobs = productRoots.map((productRoot) => this.loadProduct(productRoot));
+      const [productResults] = await Promise.all([
+        Promise.allSettled(productJobs),
+        this.restoreCart()
+      ]);
+      const failed = productResults.filter((result) => result.status === 'rejected');
+      this.root.dataset.pmpState = productRoots.length && failed.length === productRoots.length ? 'error' : 'ready';
+      dispatch(this.root, 'pmp:commerce-ready', { failed: failed.length });
       return this;
     }
 
     async loadProduct(productRoot) {
-      const handle = productRoot.dataset.shopifyHandle;
+      const handle = productRoot.dataset.pmpProductHandle || productRoot.dataset.shopifyHandle;
       productRoot.dataset.pmpState = 'loading';
       this.clearProductError(productRoot);
       try {
-        const product = await this.client.productByHandle(handle);
+        if (!handle) throw new Error('Missing Shopify product handle.');
+        const product = await this.getProduct(handle);
+        if (!product) throw new Error(`Product not found: ${handle}`);
         this.products.set(productRoot, product);
-        this.selections.set(productRoot, {});
+        if (!this.selections.has(productRoot)) this.selections.set(productRoot, {});
         this.renderProduct(productRoot, product);
-        this.bindProduct(productRoot, product);
+        this.bindProduct(productRoot);
         productRoot.dataset.pmpState = 'ready';
-        productRoot.dispatchEvent(new global.CustomEvent('pmp:product-ready', { detail: { product } }));
+        dispatch(productRoot, 'pmp:product-ready', { product });
+        this.analytics(productRoot, 'view_item', { items: [this.productItem(product)] });
       } catch (error) {
         productRoot.dataset.pmpState = 'error';
         this.showProductError(productRoot, error.message);
         throw error;
       }
+    }
+
+    getProduct(handle, { force = false } = {}) {
+      if (!force && this.productCache.has(handle)) return this.productCache.get(handle);
+      const request = Promise.resolve().then(() => this.client.productByHandle(handle));
+      this.productCache.set(handle, request);
+      request.catch(() => {
+        if (this.productCache.get(handle) === request) this.productCache.delete(handle);
+      });
+      return request;
     }
 
     renderProduct(productRoot, product) {
@@ -254,10 +316,25 @@
       setText(productRoot, '[data-pmp-price]', formatMoney(variants(product)[0] && variants(product)[0].price, this.locale));
       setImage(productRoot, '[data-pmp-image]', product.featuredImage);
       productRoot.dataset.pmpAvailable = String(Boolean(product.availableForSale));
+      productRoot.querySelectorAll('[data-pmp-add], [data-pmp-add-to-cart]').forEach((button) => {
+        if (!this.pendingAddButtons.has(button)) button.dataset.pmpState = 'ready';
+      });
+      const realOptions = (product.options || []).filter((option) => option.name !== 'Title');
+      if (!realOptions.length && variants(product).length === 1) {
+        const only = variants(product)[0];
+        const selected = {};
+        (only.selectedOptions || []).forEach((option) => { selected[option.name] = option.value; });
+        this.selections.set(productRoot, selected);
+        productRoot.dataset.pmpVariantId = only.id;
+      }
       const optionsRoot = productRoot.querySelector('[data-pmp-options]');
-      if (!optionsRoot) return;
+      if (!optionsRoot) {
+        this.refreshOptions(productRoot, product);
+        return;
+      }
       optionsRoot.replaceChildren();
-      (product.options || []).filter((option) => option.name !== 'Title').forEach((option) => {
+      const document = productRoot.ownerDocument;
+      realOptions.forEach((option) => {
         const group = document.createElement('fieldset');
         group.className = 'pmp-option-group';
         group.dataset.pmpOption = option.name;
@@ -278,18 +355,12 @@
         });
         optionsRoot.appendChild(group);
       });
-      const realOptions = (product.options || []).filter((option) => option.name !== 'Title');
-      if (!realOptions.length && variants(product).length === 1) {
-        const only = variants(product)[0];
-        const selected = {};
-        (only.selectedOptions || []).forEach((option) => { selected[option.name] = option.value; });
-        this.selections.set(productRoot, selected);
-        productRoot.dataset.pmpVariantId = only.id;
-      }
       this.refreshOptions(productRoot, product);
     }
 
-    bindProduct(productRoot, product) {
+    bindProduct(productRoot) {
+      if (productRoot.dataset.pmpBound === 'true') return;
+      productRoot.dataset.pmpBound = 'true';
       productRoot.addEventListener('click', (event) => {
         const option = event.target.closest('[data-pmp-option-value]');
         if (option && !option.disabled) {
@@ -298,13 +369,20 @@
           selected[option.dataset.pmpOptionName] = option.dataset.pmpOptionValue;
           this.selections.set(productRoot, selected);
           this.clearProductError(productRoot);
+          productRoot.dataset.pmpState = 'ready';
+          productRoot.querySelectorAll('[data-pmp-add], [data-pmp-add-to-cart]').forEach((button) => {
+            if (!this.pendingAddButtons.has(button)) button.dataset.pmpState = 'ready';
+          });
+          const product = this.products.get(productRoot);
           this.refreshOptions(productRoot, product);
+          const resolved = resolveVariant(product, selected);
+          if (resolved) this.analytics(productRoot, 'select_item', { items: [this.variantItem(product, resolved, 1)] });
           return;
         }
-        const add = event.target.closest('[data-pmp-add-to-cart]');
+        const add = event.target.closest('[data-pmp-add-to-cart], [data-pmp-add]');
         if (add) {
           event.preventDefault();
-          this.addProduct(productRoot, product, add);
+          this.addProduct(productRoot, this.products.get(productRoot), add);
         }
       });
     }
@@ -324,6 +402,7 @@
         });
         button.dataset.pmpSelected = String(selected[name] === value);
         button.dataset.pmpAvailable = String(Boolean(availableExists));
+        button.dataset.pmpState = selected[name] === value ? 'selected' : (availableExists ? 'ready' : 'unavailable');
         button.classList.toggle('pmp-is-selected', selected[name] === value);
         button.classList.toggle('pmp-is-unavailable', !candidateExists || !availableExists);
         button.disabled = !candidateExists || !availableExists;
@@ -341,60 +420,107 @@
       }
     }
 
-    async addProduct(productRoot, product, button) {
+    addProduct(productRoot, product, button) {
+      if (!product || this.pendingAddButtons.has(button)) return this.actionQueue;
       const selection = this.selections.get(productRoot) || {};
       const expected = (product.options || []).filter((option) => option.name !== 'Title').length;
       if (Object.keys(selection).filter((name) => name !== 'Title').length < expected) {
         this.showProductError(productRoot, 'Please select all product options.');
-        return;
+        productRoot.dataset.pmpState = 'error';
+        button.dataset.pmpState = 'error';
+        return this.actionQueue;
       }
       const variant = resolveVariant(product, selection);
       if (!variant) {
         this.showProductError(productRoot, 'This option combination is unavailable.');
-        return;
+        productRoot.dataset.pmpState = 'error';
+        button.dataset.pmpState = 'error';
+        return this.actionQueue;
       }
       if (!variant.availableForSale) {
         this.showProductError(productRoot, 'This variant is sold out.');
-        return;
+        productRoot.dataset.pmpState = 'error';
+        button.dataset.pmpState = 'error';
+        return this.actionQueue;
       }
-      if (this.busy) return;
-      this.busy = true;
+      const handle = product.handle || productRoot.dataset.pmpProductHandle || productRoot.dataset.shopifyHandle;
+      this.pendingAddButtons.add(button);
       button.dataset.pmpAdding = 'true';
+      button.dataset.pmpState = 'adding';
+      productRoot.dataset.pmpState = 'adding';
       button.classList.add('pmp-is-adding');
       button.disabled = true;
       this.clearProductError(productRoot);
+      return this.enqueue(async () => {
+        try {
+          const lines = [{ merchandiseId: variant.id, quantity: 1 }];
+          this.cart = this.cart && this.cart.id
+            ? await this.client.cartLinesAdd(this.cart.id, lines)
+            : await this.client.cartCreate(lines);
+          this.persistCart(this.cart);
+          this.renderCart();
+          this.openCart();
+          productRoot.dataset.pmpState = 'added';
+          button.dataset.pmpState = 'added';
+          dispatch(productRoot, 'pmp:cart-add', { cart: this.cart, variant });
+          this.analytics(productRoot, 'add_to_cart', { items: [this.variantItem(product, variant, 1)] });
+        } catch (error) {
+          await this.refreshHandleAfterAddFailure(handle);
+          productRoot.dataset.pmpState = 'error';
+          button.dataset.pmpState = 'error';
+          this.showProductError(productRoot, error.message);
+        } finally {
+          this.pendingAddButtons.delete(button);
+          button.dataset.pmpAdding = 'false';
+          button.classList.remove('pmp-is-adding');
+          button.disabled = false;
+        }
+      });
+    }
+
+    async refreshHandleAfterAddFailure(handle) {
+      if (!handle) return;
       try {
-        const cart = await this.ensureCart();
-        this.cart = await this.client.cartLinesAdd(cart.id, [{ merchandiseId: variant.id, quantity: 1 }]);
-        this.persistCart(this.cart);
-        this.renderCart();
-        this.openCart();
-        productRoot.dispatchEvent(new global.CustomEvent('pmp:cart-add', { detail: { cart: this.cart, variant } }));
-      } catch (error) {
-        this.showProductError(productRoot, error.message);
-      } finally {
-        this.busy = false;
-        button.dataset.pmpAdding = 'false';
-        button.classList.remove('pmp-is-adding');
-        button.disabled = false;
+        const fresh = await this.getProduct(handle, { force: true });
+        this.products.forEach((current, root) => {
+          if (current && current.handle === handle) {
+            this.products.set(root, fresh);
+            this.renderProduct(root, fresh);
+          }
+        });
+      } catch (_) {
+        // The mutation error remains the actionable message; refresh is best-effort.
       }
     }
 
+    enqueue(operation) {
+      const run = async () => {
+        this.busy = true;
+        try { return await operation(); }
+        finally { this.busy = false; }
+      };
+      const result = this.actionQueue.then(run, run);
+      this.actionQueue = result.catch(() => {});
+      return result;
+    }
+
+    whenIdle() { return this.actionQueue; }
+
     bindCartControls() {
       this.root.addEventListener('click', (event) => {
-        if (event.target.closest('[data-pmp-cart-open-button]')) { event.preventDefault(); this.openCart(); }
+        if (event.target.closest('[data-pmp-cart-open-button], [data-pmp-cart-trigger]')) { event.preventDefault(); this.openCart(); }
         if (event.target.closest('[data-pmp-cart-close]')) { event.preventDefault(); this.closeCart(); }
         if (event.target.closest('[data-pmp-checkout]')) { event.preventDefault(); this.checkout(); }
         const line = event.target.closest('[data-pmp-cart-line]');
         if (!line || !line.dataset.pmpLineId) return;
-        if (event.target.closest('[data-pmp-line-increase]')) { event.preventDefault(); this.updateLine(line.dataset.pmpLineId, Number(line.dataset.pmpQuantity) + 1); }
-        if (event.target.closest('[data-pmp-line-decrease]')) { event.preventDefault(); this.updateLine(line.dataset.pmpLineId, Number(line.dataset.pmpQuantity) - 1); }
+        if (event.target.closest('[data-pmp-line-increase]')) { event.preventDefault(); this.changeLine(line.dataset.pmpLineId, 1); }
+        if (event.target.closest('[data-pmp-line-decrease]')) { event.preventDefault(); this.changeLine(line.dataset.pmpLineId, -1); }
         if (event.target.closest('[data-pmp-line-remove]')) { event.preventDefault(); this.removeLine(line.dataset.pmpLineId); }
       });
     }
 
     async restoreCart() {
-      const id = this.storage && this.storage.getItem(CART_KEY);
+      const id = this.storageValue(CART_KEY);
       if (!id) {
         this.renderCart();
         return null;
@@ -417,42 +543,70 @@
       return this.cart;
     }
 
-    async updateLine(lineId, quantity) {
-      if (quantity <= 0) return this.removeLine(lineId);
-      return this.mutateCart(async () => this.client.cartLinesUpdate(this.cart.id, [{ id: lineId, quantity }]));
+    updateLine(lineId, quantity) {
+      return this.mutateCart(async () => {
+        if (quantity <= 0) {
+          const removed = cartLines(this.cart).find((line) => line.id === lineId);
+          return { cart: await this.removeLineNow(lineId), removed };
+        }
+        return this.client.cartLinesUpdate(this.cart.id, [{ id: lineId, quantity }]);
+      });
     }
 
-    async removeLine(lineId) {
-      return this.mutateCart(async () => this.client.cartLinesRemove(this.cart.id, [lineId]));
+    changeLine(lineId, delta) {
+      return this.mutateCart(async () => {
+        const line = cartLines(this.cart).find((item) => item.id === lineId);
+        if (!line) throw new Error('This cart line is no longer available.');
+        const quantity = Number(line.quantity) + delta;
+        if (quantity <= 0) return { cart: await this.removeLineNow(lineId), removed: line };
+        return this.client.cartLinesUpdate(this.cart.id, [{ id: lineId, quantity }]);
+      });
     }
 
-    async mutateCart(operation) {
-      if (!this.cart || this.busy) return;
-      this.busy = true;
-      this.root.dataset.pmpCartState = 'updating';
-      this.showCartError('');
-      try {
-        this.cart = await operation();
-        this.persistCart(this.cart);
-        this.renderCart();
-      } catch (error) {
-        this.root.dataset.pmpCartState = 'error';
-        this.showCartError(error.message);
-      } finally {
-        this.busy = false;
-      }
+    removeLine(lineId) {
+      return this.mutateCart(() => this.removeLineNow(lineId), { removeLineId: lineId });
+    }
+
+    removeLineNow(lineId) {
+      return this.client.cartLinesRemove(this.cart.id, [lineId]);
+    }
+
+    mutateCart(operation, { removeLineId } = {}) {
+      return this.enqueue(async () => {
+        if (!this.cart || !this.cart.id) return;
+        this.root.dataset.pmpCartState = 'updating';
+        this.showCartError('');
+        let removed = removeLineId && cartLines(this.cart).find((line) => line.id === removeLineId);
+        try {
+          const result = await operation();
+          if (result && result.cart && Object.prototype.hasOwnProperty.call(result, 'removed')) {
+            this.cart = result.cart;
+            removed = result.removed;
+          } else {
+            this.cart = result;
+          }
+          this.persistCart(this.cart);
+          this.renderCart();
+          if (removed) this.analytics(this.root, 'remove_from_cart', { items: [this.lineItem(removed)] });
+        } catch (error) {
+          this.root.dataset.pmpCartState = 'error';
+          this.showCartError(error.message);
+        }
+      });
     }
 
     renderCart() {
-      const lines = this.cart && this.cart.lines && this.cart.lines.nodes ? this.cart.lines.nodes : [];
+      const lines = cartLines(this.cart);
       this.root.dataset.pmpCartState = lines.length ? 'ready' : 'empty';
       this.root.classList.toggle('pmp-is-cart-empty', !lines.length);
       setText(this.root, '[data-pmp-cart-count]', this.cart ? this.cart.totalQuantity : 0);
-      setText(this.root, '[data-pmp-cart-total]', this.cart ? formatMoney(this.cart.cost.subtotalAmount, this.locale) : formatMoney({ amount: '0', currencyCode: 'EUR' }, this.locale));
-      const linesRoot = this.root.querySelector('[data-pmp-cart-lines]');
+      const subtotal = this.cart && this.cart.cost && this.cart.cost.subtotalAmount;
+      setText(this.root, '[data-pmp-cart-total]', formatMoney(subtotal || { amount: '0', currencyCode: 'EUR' }, this.locale));
+      const linesRoot = this.root.querySelector('[data-pmp-cart-lines], [data-pmp-cart-items]');
       if (!linesRoot) return;
       linesRoot.replaceChildren();
       const template = this.root.querySelector('template[data-pmp-cart-line-template]');
+      const document = this.root.ownerDocument;
       lines.forEach((line) => {
         const element = template && template.content
           ? template.content.firstElementChild.cloneNode(true)
@@ -460,8 +614,8 @@
         element.dataset.pmpCartLine = '';
         element.dataset.pmpLineId = line.id;
         element.dataset.pmpQuantity = String(line.quantity);
-        const merchandise = line.merchandise;
-        setText(element, '[data-pmp-line-title]', merchandise.product.title);
+        const merchandise = line.merchandise || {};
+        setText(element, '[data-pmp-line-title]', merchandise.product && merchandise.product.title);
         const variantText = (merchandise.selectedOptions || []).filter((option) => option.name !== 'Title').map((option) => option.value).join(' / ');
         setText(element, '[data-pmp-line-variant]', variantText);
         setText(element, '[data-pmp-line-price]', formatMoney(line.cost.totalAmount, this.locale));
@@ -470,9 +624,16 @@
         linesRoot.appendChild(element);
       });
       const checkout = this.root.querySelector('[data-pmp-checkout]');
-      if (checkout) checkout.disabled = !lines.length;
-      const empty = this.root.querySelector('.pmp-cart-empty');
-      if (empty) empty.classList.toggle('pmp-is-hidden', Boolean(lines.length));
+      if (checkout) {
+        checkout.disabled = !lines.length;
+        checkout.dataset.pmpState = lines.length ? 'ready' : 'checkout-unavailable';
+        checkout.setAttribute('aria-disabled', String(!lines.length));
+      }
+      const empty = this.root.querySelector('[data-pmp-cart-empty]');
+      if (empty) {
+        empty.dataset.pmpState = lines.length ? 'hidden' : 'empty';
+        empty.setAttribute('aria-hidden', String(Boolean(lines.length)));
+      }
     }
 
     openCart() {
@@ -481,10 +642,12 @@
       const cart = this.root.querySelector('[data-pmp-cart]');
       if (cart) {
         cart.setAttribute('aria-hidden', 'false');
+        cart.dataset.pmpOpen = 'true';
         cart.classList.add('pmp-cart-drawer-open');
       }
-      const backdrop = this.root.querySelector('.pmp-cart-backdrop');
-      if (backdrop) backdrop.classList.add('pmp-cart-backdrop-open');
+      const backdrop = this.root.querySelector('[data-pmp-cart-backdrop]');
+      if (backdrop) backdrop.dataset.pmpOpen = 'true';
+      this.analytics(this.root, 'view_cart', { items: cartLines(this.cart).map((line) => this.lineItem(line)) });
     }
 
     closeCart() {
@@ -493,30 +656,135 @@
       const cart = this.root.querySelector('[data-pmp-cart]');
       if (cart) {
         cart.setAttribute('aria-hidden', 'true');
+        cart.dataset.pmpOpen = 'false';
         cart.classList.remove('pmp-cart-drawer-open');
       }
-      const backdrop = this.root.querySelector('.pmp-cart-backdrop');
-      if (backdrop) backdrop.classList.remove('pmp-cart-backdrop-open');
+      const backdrop = this.root.querySelector('[data-pmp-cart-backdrop]');
+      if (backdrop) backdrop.dataset.pmpOpen = 'false';
     }
 
     checkout() {
-      if (!this.cart || !this.cart.checkoutUrl) {
-        this.showCartError('Your bag is empty.');
-        return;
-      }
-      global.location.assign(this.cart.checkoutUrl);
+      return this.enqueue(async () => {
+        const checkout = this.root.querySelector('[data-pmp-checkout]');
+        this.showCartError('');
+        if (!this.cart || !this.cart.id) {
+          this.checkoutUnavailable('Your bag is empty.', checkout);
+          return;
+        }
+        this.root.dataset.pmpCartState = 'updating';
+        if (checkout) checkout.dataset.pmpState = 'updating';
+        try {
+          const refreshed = await this.client.cart(this.cart.id);
+          if (!refreshed) {
+            this.cart = null;
+            this.clearPersistedCart();
+            this.renderCart();
+            this.checkoutUnavailable('Your bag is no longer available.', checkout);
+            return;
+          }
+          const lines = cartLines(refreshed);
+          this.cart = refreshed;
+          this.persistCart(refreshed);
+          this.renderCart();
+          const invalidLine = lines.some((line) => !line || Number(line.quantity) <= 0 || !line.merchandise || !line.merchandise.id || line.merchandise.availableForSale === false);
+          if (!refreshed.id || !lines.length || Number(refreshed.totalQuantity) <= 0 || invalidLine) {
+            this.checkoutUnavailable('Your bag is empty or contains an unavailable item.', checkout);
+            return;
+          }
+          if (!checkoutUrlIsSafe(refreshed.checkoutUrl, this.checkoutHosts)) {
+            this.checkoutUnavailable('Checkout is unavailable.', checkout);
+            return;
+          }
+          this.analytics(this.root, 'begin_checkout', { items: lines.map((line) => this.lineItem(line)) });
+          this.navigate(refreshed.checkoutUrl);
+        } catch (error) {
+          this.checkoutUnavailable(error.message || 'Checkout is unavailable.', checkout);
+        }
+      });
+    }
+
+    checkoutUnavailable(message, button) {
+      this.root.dataset.pmpCartState = 'checkout-unavailable';
+      if (button) button.dataset.pmpState = 'checkout-unavailable';
+      this.showCartError(message);
     }
 
     persistCart(cart) {
       if (!this.storage || !cart || !cart.id) return;
-      this.storage.setItem(CART_KEY, cart.id);
-      this.storage.setItem(CART_UPDATED_KEY, new Date().toISOString());
+      try {
+        this.storage.setItem(CART_KEY, cart.id);
+        this.storage.setItem(CART_UPDATED_KEY, new Date().toISOString());
+      } catch (_) {
+        // Storage can be unavailable in privacy modes; the in-memory cart remains valid.
+      }
     }
 
     clearPersistedCart() {
       if (!this.storage) return;
-      this.storage.removeItem(CART_KEY);
-      this.storage.removeItem(CART_UPDATED_KEY);
+      try {
+        this.storage.removeItem(CART_KEY);
+        this.storage.removeItem(CART_UPDATED_KEY);
+      } catch (_) {
+        // A blocked storage API must not block commerce initialization.
+      }
+    }
+
+    storageValue(key) {
+      try { return this.storage && this.storage.getItem(key); }
+      catch (_) { return null; }
+    }
+
+    productItem(product) {
+      const first = variants(product)[0];
+      return {
+        item_id: product.id,
+        item_name: product.title,
+        item_handle: product.handle,
+        currency: first && first.price && first.price.currencyCode,
+        price: first && first.price && Number(first.price.amount)
+      };
+    }
+
+    variantItem(product, variant, quantity) {
+      return {
+        item_id: variant.id,
+        item_name: product.title,
+        item_handle: product.handle,
+        item_variant: variant.title,
+        currency: variant.price && variant.price.currencyCode,
+        price: variant.price && Number(variant.price.amount),
+        quantity
+      };
+    }
+
+    lineItem(line) {
+      const merchandise = line.merchandise || {};
+      const product = merchandise.product || {};
+      const total = line.cost && line.cost.totalAmount;
+      return {
+        item_id: merchandise.id,
+        item_name: product.title,
+        item_handle: product.handle,
+        item_variant: merchandise.title,
+        currency: total && total.currencyCode,
+        value: total && Number(total.amount),
+        quantity: Number(line.quantity) || 0
+      };
+    }
+
+    analytics(target, event, metadata) {
+      const items = (metadata && metadata.items) || [];
+      const currency = items.find((item) => item.currency);
+      const value = items.reduce((sum, item) => {
+        const itemValue = item.value == null ? Number(item.price || 0) * Number(item.quantity || 1) : Number(item.value);
+        return sum + itemValue;
+      }, 0);
+      dispatch(target, 'pmp:analytics', {
+        event,
+        currency: currency && currency.currency,
+        value,
+        items
+      });
     }
 
     clearProductError(root) { this.showProductError(root, ''); }
