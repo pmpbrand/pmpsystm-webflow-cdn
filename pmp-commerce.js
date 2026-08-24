@@ -293,6 +293,7 @@
       productRoot.addEventListener('click', (event) => {
         const option = event.target.closest('[data-pmp-option-value]');
         if (option && !option.disabled) {
+          event.preventDefault();
           const selected = { ...(this.selections.get(productRoot) || {}) };
           selected[option.dataset.pmpOptionName] = option.dataset.pmpOptionValue;
           this.selections.set(productRoot, selected);
@@ -301,7 +302,10 @@
           return;
         }
         const add = event.target.closest('[data-pmp-add-to-cart]');
-        if (add) this.addProduct(productRoot, product, add);
+        if (add) {
+          event.preventDefault();
+          this.addProduct(productRoot, product, add);
+        }
       });
     }
 
@@ -378,14 +382,14 @@
 
     bindCartControls() {
       this.root.addEventListener('click', (event) => {
-        if (event.target.closest('[data-pmp-cart-open-button]')) this.openCart();
-        if (event.target.closest('[data-pmp-cart-close]')) this.closeCart();
-        if (event.target.closest('[data-pmp-checkout]')) this.checkout();
+        if (event.target.closest('[data-pmp-cart-open-button]')) { event.preventDefault(); this.openCart(); }
+        if (event.target.closest('[data-pmp-cart-close]')) { event.preventDefault(); this.closeCart(); }
+        if (event.target.closest('[data-pmp-checkout]')) { event.preventDefault(); this.checkout(); }
         const line = event.target.closest('[data-pmp-cart-line]');
         if (!line || !line.dataset.pmpLineId) return;
-        if (event.target.closest('[data-pmp-line-increase]')) this.updateLine(line.dataset.pmpLineId, Number(line.dataset.pmpQuantity) + 1);
-        if (event.target.closest('[data-pmp-line-decrease]')) this.updateLine(line.dataset.pmpLineId, Number(line.dataset.pmpQuantity) - 1);
-        if (event.target.closest('[data-pmp-line-remove]')) this.removeLine(line.dataset.pmpLineId);
+        if (event.target.closest('[data-pmp-line-increase]')) { event.preventDefault(); this.updateLine(line.dataset.pmpLineId, Number(line.dataset.pmpQuantity) + 1); }
+        if (event.target.closest('[data-pmp-line-decrease]')) { event.preventDefault(); this.updateLine(line.dataset.pmpLineId, Number(line.dataset.pmpQuantity) - 1); }
+        if (event.target.closest('[data-pmp-line-remove]')) { event.preventDefault(); this.removeLine(line.dataset.pmpLineId); }
       });
     }
 
