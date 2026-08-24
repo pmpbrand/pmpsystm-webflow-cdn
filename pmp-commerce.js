@@ -802,10 +802,27 @@
     showCartError(message) { setText(this.root, '[data-pmp-cart-error]', message); }
   }
 
+  function adaptCMSHandles(root) {
+    if (!root || !root.querySelectorAll) return;
+    [...root.querySelectorAll('[data-pmp-product]')].forEach((productRoot) => {
+      const explicit = (productRoot.dataset.pmpProductHandle || productRoot.dataset.shopifyHandle || '').trim();
+      const source = productRoot.querySelector('[data-pmp-cms-handle]');
+      const handle = explicit || (source ? source.textContent.trim() : '');
+      if (handle) {
+        productRoot.dataset.pmpProductHandle = handle;
+        productRoot.dataset.shopifyHandle = handle;
+        productRoot.dataset.pmpMappingState = 'mapped';
+      } else {
+        productRoot.dataset.pmpMappingState = 'missing';
+      }
+    });
+  }
+
   function autoInit() {
     if (!global.document) return;
     [...global.document.querySelectorAll('[data-pmp-commerce]')].forEach((root) => {
       if (root.dataset.pmpInitialized === 'true') return;
+      adaptCMSHandles(root);
       root.dataset.pmpInitialized = 'true';
       const app = new PMPCommerce(root);
       root.pmpCommerce = app;
@@ -813,7 +830,7 @@
     });
   }
 
-  const api = { StorefrontClient, PMPCommerce, formatMoney, resolveVariant, autoInit };
+  const api = { StorefrontClient, PMPCommerce, formatMoney, resolveVariant, adaptCMSHandles, autoInit };
   const isCommonJS = typeof module !== 'undefined' && module.exports;
   if (isCommonJS) module.exports = api;
   global.PMPCommerceRuntime = api;
