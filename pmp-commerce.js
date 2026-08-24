@@ -290,11 +290,15 @@
         if (!this.selections.has(productRoot)) this.selections.set(productRoot, {});
         this.renderProduct(productRoot, product);
         this.bindProduct(productRoot);
-        productRoot.dataset.pmpState = 'ready';
+        productRoot.dataset.pmpState = product.availableForSale === false ? 'sold-out' : 'ready';
         dispatch(productRoot, 'pmp:product-ready', { product });
         this.analytics(productRoot, 'view_item', { items: [this.productItem(product)] });
       } catch (error) {
         productRoot.dataset.pmpState = 'error';
+        productRoot.querySelectorAll('[data-pmp-add], [data-pmp-add-to-cart]').forEach((button) => {
+          button.dataset.pmpState = 'error';
+          button.disabled = true;
+        });
         this.showProductError(productRoot, error.message);
         throw error;
       }
@@ -316,8 +320,11 @@
       setText(productRoot, '[data-pmp-price]', formatMoney(variants(product)[0] && variants(product)[0].price, this.locale));
       setImage(productRoot, '[data-pmp-image]', product.featuredImage);
       productRoot.dataset.pmpAvailable = String(Boolean(product.availableForSale));
+      const soldOut = product.availableForSale === false;
       productRoot.querySelectorAll('[data-pmp-add], [data-pmp-add-to-cart]').forEach((button) => {
-        if (!this.pendingAddButtons.has(button)) button.dataset.pmpState = 'ready';
+        if (this.pendingAddButtons.has(button)) return;
+        button.dataset.pmpState = soldOut ? 'sold-out' : 'ready';
+        button.disabled = soldOut;
       });
       const realOptions = (product.options || []).filter((option) => option.name !== 'Title');
       if (!realOptions.length && variants(product).length === 1) {
