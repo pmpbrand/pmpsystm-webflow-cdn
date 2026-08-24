@@ -256,13 +256,16 @@
       optionsRoot.replaceChildren();
       (product.options || []).filter((option) => option.name !== 'Title').forEach((option) => {
         const group = document.createElement('fieldset');
+        group.className = 'pmp-option-group';
         group.dataset.pmpOption = option.name;
         const legend = document.createElement('legend');
+        legend.className = 'pmp-option-legend';
         legend.textContent = option.name;
         legend.dataset.pmpOptionLabel = '';
         group.appendChild(legend);
         (option.optionValues || []).forEach(({ name: value }) => {
           const button = document.createElement('button');
+          button.className = 'pmp-option-value';
           button.type = 'button';
           button.textContent = value;
           button.dataset.pmpOptionName = option.name;
@@ -314,6 +317,8 @@
         });
         button.dataset.pmpSelected = String(selected[name] === value);
         button.dataset.pmpAvailable = String(Boolean(availableExists));
+        button.classList.toggle('pmp-is-selected', selected[name] === value);
+        button.classList.toggle('pmp-is-unavailable', !candidateExists || !availableExists);
         button.disabled = !candidateExists || !availableExists;
         button.setAttribute('aria-pressed', String(selected[name] === value));
       });
@@ -348,6 +353,7 @@
       if (this.busy) return;
       this.busy = true;
       button.dataset.pmpAdding = 'true';
+      button.classList.add('pmp-is-adding');
       button.disabled = true;
       this.clearProductError(productRoot);
       try {
@@ -362,6 +368,7 @@
       } finally {
         this.busy = false;
         button.dataset.pmpAdding = 'false';
+        button.classList.remove('pmp-is-adding');
         button.disabled = false;
       }
     }
@@ -432,6 +439,7 @@
     renderCart() {
       const lines = this.cart && this.cart.lines && this.cart.lines.nodes ? this.cart.lines.nodes : [];
       this.root.dataset.pmpCartState = lines.length ? 'ready' : 'empty';
+      this.root.classList.toggle('pmp-is-cart-empty', !lines.length);
       setText(this.root, '[data-pmp-cart-count]', this.cart ? this.cart.totalQuantity : 0);
       setText(this.root, '[data-pmp-cart-total]', this.cart ? formatMoney(this.cart.cost.subtotalAmount, this.locale) : formatMoney({ amount: '0', currencyCode: 'EUR' }, this.locale));
       const linesRoot = this.root.querySelector('[data-pmp-cart-lines]');
@@ -460,12 +468,14 @@
 
     openCart() {
       this.root.dataset.pmpCartOpen = 'true';
+      this.root.classList.add('pmp-is-cart-open');
       const cart = this.root.querySelector('[data-pmp-cart]');
       if (cart) cart.setAttribute('aria-hidden', 'false');
     }
 
     closeCart() {
       this.root.dataset.pmpCartOpen = 'false';
+      this.root.classList.remove('pmp-is-cart-open');
       const cart = this.root.querySelector('[data-pmp-cart]');
       if (cart) cart.setAttribute('aria-hidden', 'true');
     }
