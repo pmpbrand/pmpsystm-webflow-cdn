@@ -40,3 +40,33 @@ git commit -m "Update Webflow scripts"
 git tag v1.0.1
 git push origin main --tags
 ```
+
+## confess-hero-v4.min.js — the /confess hero module
+
+The WebGL hero on `/confess`: one intact plate with depth parallax, the 3D sigil framed by
+the pavilion, the sigil-as-light layer, and the lens/film pass. It used to ship as twelve
+inline Webflow scripts assembled at runtime — Webflow allows only **15 registered scripts per
+page block**, which the page had reached. One hosted file removes that ceiling.
+
+```text
+https://cdn.jsdelivr.net/gh/pmpbrand/pmpsystm-webflow-cdn@v1.1.0/confess-hero-v4.min.js
+```
+
+**Register it in Webflow with its Subresource Integrity hash.** Webflow requires one, and it
+is what makes serving production code from a public repository safe: if this repository, the
+tag, or the CDN were ever tampered with, the browser refuses a file whose hash does not match.
+
+Current hash (`confess-hero-v4.min.js.sri`, 20212 bytes, module 4.2.0):
+
+```text
+sha384-ZcfHLjmS1CTIsAmYWDEzUJ9I7LST06PJx75nItQ8GjqCMpTf2VGhNEh34ZAjDidW
+```
+
+Regenerate it on every build:
+
+```bash
+openssl dgst -sha384 -binary confess-hero-v4.min.js | openssl base64 -A | sed 's/^/sha384-/'
+```
+
+Source, records and history live in the PMP OS at `06-SYSTEME-CONFESS/`. This repository holds
+compiled output only — never secrets, never anything that is not already public in the page source.
